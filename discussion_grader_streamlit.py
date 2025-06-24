@@ -2,10 +2,11 @@ import streamlit as st
 import requests
 import re
 import pandas as pd
+import os
 
 # === CONFIG ===
-MODEL = "mistral"
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
+HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+HF_TOKEN = st.secrets["HUGGINGFACE_TOKEN"]  # Requires .streamlit/secrets.toml
 
 # === SESSION STATE ===
 if "graded_data" not in st.session_state:
@@ -23,13 +24,21 @@ if "fail_grade" not in st.session_state:
 
 # === LLM CALL ===
 def call_llm(prompt: str) -> str:
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json",
+    }
     try:
-        resp = requests.post(
-            OLLAMA_API_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False},
-            timeout=20,
+        response = requests.post(
+            HF_API_URL,
+            headers=headers,
+            json={"inputs": prompt},
+            timeout=30,
         )
-        return resp.json().get("response", "").strip()
+        output = response.json()
+        if isinstance(output, list):
+            return output[0].get("generated_text", "").strip()
+        return output.get("generated_text", "").strip()
     except Exception as e:
         return f"LLM error: {e}"
 
