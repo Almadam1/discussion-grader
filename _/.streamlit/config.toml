@@ -1,0 +1,11 @@
+[server]
+headless = true
+port = 8501
+enableCORS = false
+
+[theme]
+base="light"
+
+[auth]
+enable = true
+email_domains = ["mercy.edu"]
