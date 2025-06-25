@@ -44,16 +44,16 @@ def call_llm(prompt: str) -> str:
         return f"LLM error: {e}"
 
 # ────────────────────────────────────────────────────────────────────────────
-# PROMPT GENERATORS
+# PROMPT GENERATOR
 # ────────────────────────────────────────────────────────────────────────────
 def build_internal_prompt(criteria: str) -> str:
     return (
         "You are an expert teaching assistant and discussion-board grader.\n"
-        "Strictly follow the instructor’s rubric below.  Do NOT assign grades yourself—"
+        "Strictly follow the instructor’s prompt below.  Do NOT assign grades yourself—"
         "the application will handle numeric grading based on length/spam.\n\n"
-        f"Instructor Rubric:\n{criteria.strip()}\n\n"
+        f"Instructor Prompt:\n{criteria.strip()}\n\n"
         "Now evaluate the following student post and respond ONLY with:\n"
-        "Reason: <one concise sentence explaining why it meets or fails the rubric>\n\n"
+        "Reason: <one concise sentence explaining why it meets or fails the prompt>\n\n"
         "Post:\n{{POST}}"
     )
 
@@ -98,19 +98,19 @@ def grade_post(raw_post: str):
 st.set_page_config(page_title="Discussion Post Grader", page_icon="📝")
 st.title("📝 Instructor-Guided Discussion Post Grader")
 st.markdown(
-    "1️⃣ Define your rubric → 2️⃣ Optimize with AI → 3️⃣ Grade manually or via CSV → 4️⃣ Download results"
+    "1️⃣ Define your prompt → 2️⃣ Optimize with AI → 3️⃣ Grade via CSV → 4️⃣ Download results"
 )
 
-# --- STEP 1: Define & Optimize Rubric ---
-st.header("📌 Step 1: Enter & Optimize Grading Criteria")
-example = "E.g. Posts ≥25 chars, coherent English, relevant to topic. Acceptable=100, Unacceptable=0."
-raw = st.text_area("Instructor rubric:", placeholder=example, height=100)
+# --- STEP 1: Define & Optimize Prompt ---
+st.header("📌 Step 1: Enter & Optimize Grading Prompt")
+example = "E.g. Posts ≥25 chars, coherent English, relevant to topic. Accept=100, Reject=0."
+raw = st.text_area("Instructor prompt:", placeholder=example, height=100)
 
-if st.button("✨ Optimize Rubric"):
+if st.button("✨ Optimize Prompt"):
     if not raw.strip():
-        st.error("Please enter some grading criteria above.")
+        st.error("Please enter a prompt first.")
     else:
-        with st.spinner("Refining your rubric..."):
+        with st.spinner("Optimizing your prompt..."):
             needs_grade = not re.search(r"\d+\s*if.*\d+", raw, re.I)
             needs_len   = not re.search(r"\d+\s*characters", raw, re.I)
             final = raw.strip()
@@ -118,10 +118,10 @@ if st.button("✨ Optimize Rubric"):
             if needs_grade:
                 pcol, fcol = st.columns(2)
                 with pcol:
-                    st.session_state.pass_grade = st.text_input("Pass grade", str(st.session_state.pass_grade))
+                    st.session_state.pass_grade = st.text_input("Accept grade", str(st.session_state.pass_grade))
                 with fcol:
-                    st.session_state.fail_grade = st.text_input("Fail grade", str(st.session_state.fail_grade))
-                final += f" Pass={st.session_state.pass_grade}, Fail={st.session_state.fail_grade}."
+                    st.session_state.fail_grade = st.text_input("Reject grade", str(st.session_state.fail_grade))
+                final += f" Accept={st.session_state.pass_grade}, Reject={st.session_state.fail_grade}."
 
             if needs_len:
                 st.session_state.char_threshold = st.number_input(
@@ -130,35 +130,35 @@ if st.button("✨ Optimize Rubric"):
                 final += f" MinChars={st.session_state.char_threshold}."
 
             rewrite_prompt = (
-                "Please rewrite the following rubric so that a grading assistant AI "
+                "Please rewrite the following prompt so that a grading assistant AI "
                 "will interpret it correctly and concisely. Keep the same logic.\n\n"
-                f"Rubric:\n{final}"
+                f"Prompt:\n{final}"
             )
             optimized = call_llm(rewrite_prompt)
             st.session_state.display_prompt  = optimized
             st.session_state.internal_prompt = build_internal_prompt(optimized)
 
-        st.success("Rubric optimized!")
+        st.success("Prompt optimized!")
 
-# Render the optimized rubric persistently
+# --- PERSISTENT DISPLAY OF OPTIMIZED PROMPT ---
 if st.session_state.display_prompt:
-    st.subheader("🔍 Optimized Rubric")
+    st.subheader("🔍 Optimized Prompt")
     st.code(st.session_state.display_prompt, language="text")
 
 # --- STEP 2: Grade via CSV ---
 st.header("📁 Step 2: Upload CSV of Discussion Posts")
-st.markdown("✅ Must contain a `DiscussionPost` column.")
+st.markdown("✅ CSV must include a `DiscussionPost` column.")
 with st.expander("See format example"):
-    st.write(pd.DataFrame({"DiscussionPost": ["This is a clear example post over threshold."]}))
+    st.write(pd.DataFrame({"DiscussionPost": ["Example post that meets your prompt."]}))
 
 uploaded = st.file_uploader("Choose CSV", type="csv")
 if uploaded:
     if not st.session_state.internal_prompt:
-        st.error("First optimize the rubric in Step 1.")
+        st.error("Please optimize your prompt in Step 1 first.")
     else:
         df = pd.read_csv(uploaded)
         if "DiscussionPost" not in df.columns:
-            st.error("CSV missing `DiscussionPost` column.")
+            st.error("CSV is missing the `DiscussionPost` column.")
         else:
             df["DiscussionPost"] = df["DiscussionPost"].fillna("").astype(str)
             st.success("Grading started…")
