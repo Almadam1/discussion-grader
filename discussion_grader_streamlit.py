@@ -7,7 +7,7 @@ import pandas as pd
 # CONFIGURATION
 # ────────────────────────────────────────────────────────────────────────────
 HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-HF_TOKEN   = "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"  # public/demo-only token
+HF_TOKEN   = "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"  # ← your new token
 
 # ────────────────────────────────────────────────────────────────────────────
 # SESSION STATE INITIALIZATION
@@ -49,7 +49,7 @@ def call_llm(prompt: str) -> str:
 def build_internal_prompt(criteria: str) -> str:
     return (
         "You are an expert teaching assistant and discussion-board grader.\n"
-        "Strictly follow the instructor’s prompt below.  Do NOT assign grades yourself—"
+        "Strictly follow the instructor’s prompt below. Do NOT assign grades yourself—"
         "the application will handle numeric grading based on length/spam.\n\n"
         f"Instructor Prompt:\n{criteria.strip()}\n\n"
         "Now evaluate the following student post and respond ONLY with:\n"
@@ -139,11 +139,9 @@ if st.button("✨ Optimize Prompt"):
             st.session_state.internal_prompt = build_internal_prompt(optimized)
 
         st.success("Prompt optimized!")
-
-# --- PERSISTENT DISPLAY OF OPTIMIZED PROMPT ---
-if st.session_state.display_prompt:
-    st.subheader("🔍 Optimized Prompt")
-    st.code(st.session_state.display_prompt, language="text")
+        # Immediately display the optimized prompt under the success message
+        st.subheader("🔍 Optimized Prompt")
+        st.code(st.session_state.display_prompt, language="text")
 
 # --- STEP 2: Grade via CSV ---
 st.header("📁 Step 2: Upload CSV of Discussion Posts")
