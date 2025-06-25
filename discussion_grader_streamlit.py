@@ -4,120 +4,129 @@ import re
 import pandas as pd
 
 # ────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION
+# CONFIGURATION (Use a public Instruction-tuned model)
 # ────────────────────────────────────────────────────────────────────────────
-HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-HF_TOKEN   = "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"  # your new token
+HF_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
+HF_TOKEN   = "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"  # your token
 
 # ────────────────────────────────────────────────────────────────────────────
-# SESSION STATE INITIALIZATION
+# SESSION STATE DEFAULTS
 # ────────────────────────────────────────────────────────────────────────────
-if "graded_data"      not in st.session_state: st.session_state.graded_data      = []
-if "internal_prompt"  not in st.session_state: st.session_state.internal_prompt  = ""
-if "display_prompt"   not in st.session_state: st.session_state.display_prompt   = ""
-if "char_threshold"   not in st.session_state: st.session_state.char_threshold   = 25
-if "pass_grade"       not in st.session_state: st.session_state.pass_grade       = 100
-if "fail_grade"       not in st.session_state: st.session_state.fail_grade       = 0
+for key, default in {
+    "graded_data": [],
+    "internal_prompt": "",
+    "display_prompt": "",
+    "char_threshold": 25,
+    "pass_grade": 100,
+    "fail_grade": 0
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # ────────────────────────────────────────────────────────────────────────────
-# HELPER: Call Hugging Face Inference
+# HELPER: Call Hugging Face with wait_for_model
 # ────────────────────────────────────────────────────────────────────────────
-def call_llm(prompt: str) -> str:
+def call_llm(prompt: str) -> (str, dict):
     headers = {
         "Authorization": f"Bearer {HF_TOKEN}",
         "Content-Type": "application/json",
     }
+    payload = {
+        "inputs": prompt,
+        "parameters": {"max_new_tokens": 256},
+        "options": {"use_cache": False, "wait_for_model": True}
+    }
     try:
-        resp = requests.post(HF_API_URL, headers=headers, json={"inputs": prompt}, timeout=30)
-        out = resp.json()
-        if isinstance(out, list) and out:
-            return out[0].get("generated_text","").strip()
-        if isinstance(out, dict):
-            return out.get("generated_text","").strip()
-        return ""
+        r = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+        data = r.json()
     except Exception as e:
-        return f"LLM error: {e}"
+        return f"LLM error: {e}", {}
+
+    # HF error?
+    if isinstance(data, dict) and data.get("error"):
+        return f"LLM error: {data['error']}", data
+
+    # list response?
+    if isinstance(data, list) and data and "generated_text" in data[0]:
+        return data[0]["generated_text"].strip(), data
+
+    # dict response?
+    if isinstance(data, dict) and data.get("generated_text") is not None:
+        return data["generated_text"].strip(), data
+
+    return "", data
 
 # ────────────────────────────────────────────────────────────────────────────
-# BUILDER: Wrap user-entered prompt into a full scoring prompt
+# BUILD THE FULL PROMPT TEMPLATE
 # ────────────────────────────────────────────────────────────────────────────
 def build_internal_prompt(criteria: str) -> str:
     return (
         "You are an expert teaching assistant and discussion-board grader.\n"
-        "Strictly follow the instructor’s prompt below.  "
-        "Do NOT assign the numeric grade yourself—"
-        "the app will handle Pass/Fail by character count and spam.\n\n"
+        "Strictly follow the instructor’s prompt below. You only return a one-sentence Reason.\n\n"
         f"Instructor Prompt:\n{criteria.strip()}\n\n"
-        "Now evaluate the following student post and respond ONLY with:\n"
-        "Reason: <one concise sentence explaining why it meets or fails the prompt>\n\n"
+        "Now evaluate this student post and respond ONLY with:\n"
+        "Reason: <concise sentence explaining why it meets or fails>\n\n"
         "Post:\n{{POST}}"
     )
 
 # ────────────────────────────────────────────────────────────────────────────
-# SPAM DETECTION (short-circuit gibberish)
+# SPAM DETECTION
 # ────────────────────────────────────────────────────────────────────────────
 def is_spam(text: str) -> bool:
     t = text.strip()
     patterns = [
-        r"^(.)\1{10,}$",          # same character repeated
-        r"^[^A-Za-z0-9\s]{5,}$",  # only symbols
-        r"^(a{10,}|[.?!]{5,})$",  # aaa… or ???!!!
+        r"^(.)\1{10,}$",         
+        r"^[^A-Za-z0-9\s]{5,}$", 
+        r"^(a{10,}|[.?!]{5,})$", 
     ]
     return any(re.fullmatch(p, t) for p in patterns)
 
 # ────────────────────────────────────────────────────────────────────────────
-# CORE: Grade one post (spam & length + LLM reason)
+# GRADE ONE POST
 # ────────────────────────────────────────────────────────────────────────────
 def grade_post(raw_post: str):
-    post = str(raw_post or "").strip()
+    post   = str(raw_post or "").strip()
     length = len(post)
-
     if length == 0:
-        return st.session_state.fail_grade, "(0 characters) Empty post."
+        return st.session_state.fail_grade, "(0 chars) Empty post."
     if is_spam(post):
-        return st.session_state.fail_grade, f"({length} characters) Detected as spam or gibberish."
+        return st.session_state.fail_grade, f"({length} chars) Spam detected."
 
     meets_len = length >= int(st.session_state.char_threshold)
-    grade = st.session_state.pass_grade if meets_len else st.session_state.fail_grade
+    grade     = st.session_state.pass_grade if meets_len else st.session_state.fail_grade
 
-    prompt = st.session_state.internal_prompt.replace("{{POST}}", post)
-    llm_resp = call_llm(prompt)
-    reason = re.sub(r"^Reason:\s*", "", llm_resp, flags=re.I).strip()
-    if not reason:
-        reason = "(no optimized prompt returned)"
+    tpl   = st.session_state.internal_prompt.replace("{{POST}}", post)
+    out, raw = call_llm(tpl)
+    reason = re.sub(r"^Reason:\s*", "", out, flags=re.I).strip() or "(no explanation)"
 
-    return str(grade), f"({length} characters) {reason}"
+    return str(grade), f"({length} chars) {reason}"
 
 # ────────────────────────────────────────────────────────────────────────────
-# PAGE LAYOUT
+# UI LAYOUT
 # ────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Discussion Post Grader", page_icon="📝")
-
 st.title("📝 Instructor-Guided Discussion Post Grader")
-st.markdown(
-    "1️⃣ Enter & Optimize Prompt → 2️⃣ Upload CSV → 3️⃣ Download Results"
-)
 
-# ----- STEP 1: Enter & Optimize Prompt -----
+# Step 1: Optimize Prompt
 st.header("📌 Step 1: Enter & Optimize Grading Prompt")
 example = "E.g. Posts ≥10 chars; Accept=100 if ok, Reject=0 if not."
-raw = st.text_area("Instructor prompt:", placeholder=example, height=100)
+raw     = st.text_area("Instructor prompt:", placeholder=example, height=100)
 
 if st.button("✨ Optimize Prompt"):
     if not raw.strip():
-        st.error("Please enter a prompt first.")
+        st.error("Please enter a prompt.")
     else:
-        with st.spinner("Optimizing your prompt..."):
+        with st.spinner("Optimizing…"):
             needs_grade = not re.search(r"\d+\s*(Accept|Pass)", raw, re.I)
             needs_len   = not re.search(r"\d+\s*chars?", raw, re.I)
-            final = raw.strip()
+            final       = raw.strip()
 
             if needs_grade:
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.session_state.pass_grade = st.text_input("Accept grade", str(st.session_state.pass_grade))
+                    st.session_state.pass_grade = st.text_input("Accept grade",  str(st.session_state.pass_grade))
                 with c2:
-                    st.session_state.fail_grade = st.text_input("Reject grade", str(st.session_state.fail_grade))
+                    st.session_state.fail_grade = st.text_input("Reject grade",  str(st.session_state.fail_grade))
                 final += f" Accept={st.session_state.pass_grade}, Reject={st.session_state.fail_grade}."
 
             if needs_len:
@@ -127,63 +136,58 @@ if st.button("✨ Optimize Prompt"):
                 final += f" MinChars={st.session_state.char_threshold}."
 
             rewrite = (
-                "Rewrite this prompt so that a grading assistant AI will interpret it exactly "
-                "as given, in clear, concise English. Do not change its logic.\n\n"
+                "Rewrite this grading prompt clearly and concisely so an AI will interpret it exactly.\n\n"
                 f"Prompt:\n{final}"
             )
-            optimized = call_llm(rewrite)
-
-            st.session_state.display_prompt  = optimized
-            st.session_state.internal_prompt = build_internal_prompt(optimized)
+            opt, raw_json = call_llm(rewrite)
+            st.session_state.display_prompt  = opt or "(no optimized prompt returned)"
+            st.session_state.internal_prompt = build_internal_prompt(st.session_state.display_prompt)
 
         st.success("Prompt optimized!")
 
-# ----- ALWAYS SHOW the optimized prompt if available -----
+# Always show optimized prompt
 if st.session_state.display_prompt:
     st.subheader("🔍 Optimized Prompt")
-    st.code(st.session_state.display_prompt, language="text")
+    st.code(st.session_state.display_prompt)
+    if st.session_state.display_prompt.startswith("(no optimized"):
+        with st.expander("🔧 Raw API response"):
+            st.json(raw_json)
 
-# ----- STEP 2: Upload & Grade CSV -----
-st.header("📁 Step 2: Upload CSV of Discussion Posts")
-st.markdown("✅ CSV must include a `DiscussionPost` column.")
-with st.expander("See format example"):
+# Step 2: CSV grading
+st.header("📁 Step 2: Upload CSV of Posts")
+st.markdown("✅ Must include a `DiscussionPost` column.")
+with st.expander("See example"):
     st.write(pd.DataFrame({"DiscussionPost": ["Example post that meets your prompt."]}))
 
 uploaded = st.file_uploader("Upload CSV", type="csv")
 if uploaded:
     if not st.session_state.internal_prompt:
-        st.error("Please optimize your prompt in Step 1 first.")
+        st.error("Optimize prompt first.")
     else:
         df = pd.read_csv(uploaded)
         if "DiscussionPost" not in df.columns:
-            st.error("CSV missing `DiscussionPost` column.")
+            st.error("Missing `DiscussionPost` column.")
         else:
-            df["DiscussionPost"] = df["DiscussionPost"].fillna("").astype(str)
-            st.success("Grading started…")
-            placeholder = st.empty()
+            df["DiscussionPost"] = df["DiscussionPost"].fillna("").astype(str).str.strip()
+            st.success("Grading…")
+            outp = st.empty()
             prog = st.progress(0)
-            total = len(df)
-            for i, post in enumerate(df["DiscussionPost"], start=1):
-                grade, reason = grade_post(post)
-                st.session_state.graded_data.append({
-                    "Post": post,
-                    "Grade": grade,
-                    "Reason": reason
-                })
-                placeholder.dataframe(pd.DataFrame(st.session_state.graded_data),
-                                      use_container_width=True)
-                prog.progress(i / total)
-            st.success("✅ Grading complete!")
+            for i, post in enumerate(df["DiscussionPost"], 1):
+                g, r = grade_post(post)
+                st.session_state.graded_data.append({"Post": post, "Grade": g, "Reason": r})
+                outp.dataframe(pd.DataFrame(st.session_state.graded_data), use_container_width=True)
+                prog.progress(i / len(df))
+            st.success("✅ Done!")
 
-# ----- FINAL RESULTS & DOWNLOAD -----
+# Final table + download
 st.header("📋 Graded Results")
 if st.session_state.graded_data:
-    results = pd.DataFrame(st.session_state.graded_data)
-    st.dataframe(results, use_container_width=True)
-    csv = results.to_csv(index=False).encode("utf-8")
+    final_df = pd.DataFrame(st.session_state.graded_data)
+    st.dataframe(final_df, use_container_width=True)
+    csv = final_df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download CSV", csv, "graded_posts.csv", "text/csv")
     if st.button("🗑️ Reset All"):
         st.session_state.clear()
         st.experimental_rerun()
 else:
-    st.info("No posts graded yet. Complete Step 1 & 2.")
+    st.info("No posts graded yet.")
