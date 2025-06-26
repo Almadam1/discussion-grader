@@ -7,7 +7,7 @@ import pandas as pd
 # CONFIGURATION (Use a public Instruction-tuned model)
 # ────────────────────────────────────────────────────────────────────────────
 HF_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-HF_TOKEN   = "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"  # your token
+HF_TOKEN   = "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"  # your token
 
 # ────────────────────────────────────────────────────────────────────────────
 # SESSION STATE DEFAULTS
