@@ -5,7 +5,8 @@ import re
 import json
 import pandas as pd
 import streamlit as st
-from openai import OpenAI, OpenAIError
+import openai  # ✅ Corrected import
+from openai import OpenAIError  # ✅ Corrected import
 import nltk
 from nltk import pos_tag, word_tokenize
 
@@ -26,13 +27,11 @@ except LookupError:
 # ——— 2) Load OpenAI key ———
 OPENAI_KEY = st.secrets["openai"]["api_key"]
 if not OPENAI_KEY:
-    st.error("❌ No OpenAI key in secrets.toml")
+    st.error("❌ No OpenAI key in secrets.toml or Streamlit secrets.")
     st.stop()
+openai.api_key = OPENAI_KEY  # ✅ Assign key
 
-# ——— 3) Instantiate client ———
-client = OpenAI(api_key=OPENAI_KEY)
-
-# ——— 4) UI: Prompt input ———
+# ——— 3) UI: Prompt input ———
 st.title("📝 Discussion Post Grader")
 
 if "prompt_text" not in st.session_state:
@@ -54,7 +53,7 @@ if not st.session_state.prompt_text:
 
 PROMPT = st.session_state.prompt_text
 
-# ——— 5) Count‐rule parsing ———
+# ——— 4) Count‐rule parsing ———
 COUNT_PATTERNS = [
     r"(?:at\s+least)\s+(\d+)\s+([A-Za-z ]+?)(?:[.,]|$)",
     r"(?:must|should)\s+contain\s+(\d+)\s+([A-Za-z ]+?)(?:[.,]|$)",
@@ -77,7 +76,7 @@ if rules:
     if unknown:
         st.warning(f"⚠️ Cannot count feature(s): {', '.join(unknown)}; those will be checked semantically.")
 
-# ——— 6) Feature counting ———
+# ——— 5) Feature counting ———
 def count_capitals(text): return len(re.findall(r"[A-Z]", text))
 def count_vowels(text):   return len(re.findall(r"[aeiouAEIOU]", text))
 def count_nouns(text):
@@ -94,17 +93,17 @@ FEATURE_FNS = {
     "verb":           count_verbs,
 }
 
-# ——— 7) Safe LLM call ———
+# ——— 6) Safe LLM call ———
 def safe_chat(messages, **kwargs):
     try:
-        return client.chat.completions.create(
+        return openai.ChatCompletion.create(  # ✅ Fixed call
             model=MODEL_NAME, messages=messages, **kwargs
         )
     except OpenAIError as e:
         st.error(f"LLM error: {e}")
         return None
 
-# ——— 8) Semantic fallback ———
+# ——— 7) Semantic fallback ———
 def semantic_grade(text: str):
     snippet = text if len(text) <= MAX_POST_LENGTH else text[:MAX_POST_LENGTH] + "…"
     user_content = (
@@ -134,7 +133,7 @@ def semantic_grade(text: str):
     meets = bool(obj.get("meets"))
     return (100 if meets else 0), obj.get("reason","").strip()
 
-# ——— 9) Unified grading ———
+# ——— 8) Unified grading ———
 def grade_post(text: str):
     text = text.replace("…", "...")
     if rules:
@@ -150,7 +149,7 @@ def grade_post(text: str):
         return (100 if meets else 0), reason
     return semantic_grade(text)
 
-# ——— 10) CSV upload & grading ———
+# ——— 9) CSV upload & grading ———
 uploaded = st.file_uploader(
     "Upload CSV with a `DiscussionPost` column", type="csv", disabled=not PROMPT
 )
@@ -185,7 +184,7 @@ if uploaded:
         )
         st.markdown(f"**Summary:** {passed} passed • {failed} failed out of {len(results)}")
 
-        # ——— 11) Summarize ———
+        # ——— 10) Summarize ———
         st.subheader("💡 Summary of Discussion Posts")
         all_posts = "\n\n".join(df["DiscussionPost"].astype(str).tolist())
 
