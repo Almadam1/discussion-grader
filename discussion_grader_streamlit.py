@@ -5,7 +5,8 @@ import re
 import json
 import pandas as pd
 import streamlit as st
-from openai import OpenAI, OpenAIError
+import openai
+from openai import OpenAIError
 import nltk
 from nltk import pos_tag, word_tokenize
 
@@ -29,8 +30,7 @@ if not OPENAI_KEY:
     st.error("❌ No OpenAI key in secrets.toml")
     st.stop()
 
-# ——— 3) Instantiate client ———
-client = OpenAI(api_key=OPENAI_KEY)
+openai.api_key = OPENAI_KEY
 
 # ——— 4) UI: Prompt input ———
 st.title("📝 Discussion Post Grader")
@@ -97,7 +97,7 @@ FEATURE_FNS = {
 # ——— 7) Safe LLM call ———
 def safe_chat(messages, **kwargs):
     try:
-        return client.chat.completions.create(
+        return openai.ChatCompletion.create(
             model=MODEL_NAME, messages=messages, **kwargs
         )
     except OpenAIError as e:
