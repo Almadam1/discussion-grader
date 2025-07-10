@@ -219,4 +219,3 @@ if uploaded:
     
             # Rerun script
             st.experimental_rerun()
-
