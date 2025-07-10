@@ -5,7 +5,8 @@ import re
 import json
 import pandas as pd
 import streamlit as st
-from openai import OpenAI, OpenAIError
+import openai
+from openai import OpenAIError
 import nltk
 from nltk import pos_tag, word_tokenize
 
