@@ -1,193 +1,211 @@
-import streamlit as st
-import requests
+# app.py
+
+import os
 import re
+import json
 import pandas as pd
+import streamlit as st
+from openai import OpenAI, OpenAIError
+import nltk
+from nltk import pos_tag, word_tokenize
 
-# ────────────────────────────────────────────────────────────────────────────
-# CONFIGURATION (Use a public Instruction-tuned model)
-# ────────────────────────────────────────────────────────────────────────────
-HF_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-base"
-HF_TOKEN   = "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"  # your token
+# ——— Constants ———
+MODEL_NAME       = "gpt-3.5-turbo"
+SEM_TEMPERATURE  = 0.0
+SUM_TEMPERATURE  = 0.7
+MAX_POST_LENGTH  = 2000
 
-# ────────────────────────────────────────────────────────────────────────────
-# SESSION STATE DEFAULTS
-# ────────────────────────────────────────────────────────────────────────────
-for key, default in {
-    "graded_data": [],
-    "internal_prompt": "",
-    "display_prompt": "",
-    "char_threshold": 25,
-    "pass_grade": 100,
-    "fail_grade": 0
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+# ——— 1) Ensure NLTK data ———
+try:
+    nltk.data.find("tokenizers/punkt")
+    nltk.data.find("taggers/averaged_perceptron_tagger")
+except LookupError:
+    nltk.download("punkt")
+    nltk.download("averaged_perceptron_tagger")
 
-# ────────────────────────────────────────────────────────────────────────────
-# HELPER: Call Hugging Face with wait_for_model
-# ────────────────────────────────────────────────────────────────────────────
-def call_llm(prompt: str) -> (str, dict):
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "inputs": prompt,
-        "parameters": {"max_new_tokens": 256},
-        "options": {"use_cache": False, "wait_for_model": True}
-    }
-    try:
-        r = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
-        data = r.json()
-    except Exception as e:
-        return f"LLM error: {e}", {}
+# ——— 2) Load OpenAI key ———
+OPENAI_KEY = st.secrets["openai"]["api_key"]
+if not OPENAI_KEY:
+    st.error("❌ No OpenAI key in secrets.toml")
+    st.stop()
 
-    # HF error?
-    if isinstance(data, dict) and data.get("error"):
-        return f"LLM error: {data['error']}", data
+# ——— 3) Instantiate client ———
+client = OpenAI(api_key=OPENAI_KEY)
 
-    # list response?
-    if isinstance(data, list) and data and "generated_text" in data[0]:
-        return data[0]["generated_text"].strip(), data
+# ——— 4) UI: Prompt input ———
+st.title("📝 Discussion Post Grader")
 
-    # dict response?
-    if isinstance(data, dict) and data.get("generated_text") is not None:
-        return data["generated_text"].strip(), data
+if "prompt_text" not in st.session_state:
+    st.session_state.prompt_text = None
 
-    return "", data
-
-# ────────────────────────────────────────────────────────────────────────────
-# BUILD THE FULL PROMPT TEMPLATE
-# ────────────────────────────────────────────────────────────────────────────
-def build_internal_prompt(criteria: str) -> str:
-    return (
-        "You are an expert teaching assistant and discussion-board grader.\n"
-        "Strictly follow the instructor’s prompt below. You only return a one-sentence Reason.\n\n"
-        f"Instructor Prompt:\n{criteria.strip()}\n\n"
-        "Now evaluate this student post and respond ONLY with:\n"
-        "Reason: <concise sentence explaining why it meets or fails>\n\n"
-        "Post:\n{{POST}}"
+if st.session_state.prompt_text is None:
+    prompt_input = st.text_area(
+        "1) Enter the instructor's grading prompt",
+        placeholder="e.g. Must be at least 20 characters long, contain 5 vowels, and 2 verbs"
     )
-
-# ────────────────────────────────────────────────────────────────────────────
-# SPAM DETECTION
-# ────────────────────────────────────────────────────────────────────────────
-def is_spam(text: str) -> bool:
-    t = text.strip()
-    patterns = [
-        r"^(.)\1{10,}$",         
-        r"^[^A-Za-z0-9\s]{5,}$", 
-        r"^(a{10,}|[.?!]{5,})$", 
-    ]
-    return any(re.fullmatch(p, t) for p in patterns)
-
-# ────────────────────────────────────────────────────────────────────────────
-# GRADE ONE POST
-# ────────────────────────────────────────────────────────────────────────────
-def grade_post(raw_post: str):
-    post   = str(raw_post or "").strip()
-    length = len(post)
-    if length == 0:
-        return st.session_state.fail_grade, "(0 chars) Empty post."
-    if is_spam(post):
-        return st.session_state.fail_grade, f"({length} chars) Spam detected."
-
-    meets_len = length >= int(st.session_state.char_threshold)
-    grade     = st.session_state.pass_grade if meets_len else st.session_state.fail_grade
-
-    tpl   = st.session_state.internal_prompt.replace("{{POST}}", post)
-    out, raw = call_llm(tpl)
-    reason = re.sub(r"^Reason:\s*", "", out, flags=re.I).strip() or "(no explanation)"
-
-    return str(grade), f"({length} chars) {reason}"
-
-# ────────────────────────────────────────────────────────────────────────────
-# UI LAYOUT
-# ────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Discussion Post Grader", page_icon="📝")
-st.title("📝 Instructor-Guided Discussion Post Grader")
-
-# Step 1: Optimize Prompt
-st.header("📌 Step 1: Enter & Optimize Grading Prompt")
-example = "E.g. Posts ≥10 chars; Accept=100 if ok, Reject=0 if not."
-raw     = st.text_area("Instructor prompt:", placeholder=example, height=100)
-
-if st.button("✨ Optimize Prompt"):
-    if not raw.strip():
-        st.error("Please enter a prompt.")
-    else:
-        with st.spinner("Optimizing…"):
-            needs_grade = not re.search(r"\d+\s*(Accept|Pass)", raw, re.I)
-            needs_len   = not re.search(r"\d+\s*chars?", raw, re.I)
-            final       = raw.strip()
-
-            if needs_grade:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.session_state.pass_grade = st.text_input("Accept grade",  str(st.session_state.pass_grade))
-                with c2:
-                    st.session_state.fail_grade = st.text_input("Reject grade",  str(st.session_state.fail_grade))
-                final += f" Accept={st.session_state.pass_grade}, Reject={st.session_state.fail_grade}."
-
-            if needs_len:
-                st.session_state.char_threshold = st.number_input(
-                    "Min char threshold", min_value=1, value=st.session_state.char_threshold
-                )
-                final += f" MinChars={st.session_state.char_threshold}."
-
-            rewrite = (
-                "Rewrite this grading prompt clearly and concisely so an AI will interpret it exactly.\n\n"
-                f"Prompt:\n{final}"
-            )
-            opt, raw_json = call_llm(rewrite)
-            st.session_state.display_prompt  = opt or "(no optimized prompt returned)"
-            st.session_state.internal_prompt = build_internal_prompt(st.session_state.display_prompt)
-
-        st.success("Prompt optimized!")
-
-# Always show optimized prompt
-if st.session_state.display_prompt:
-    st.subheader("🔍 Optimized Prompt")
-    st.code(st.session_state.display_prompt)
-    if st.session_state.display_prompt.startswith("(no optimized"):
-        with st.expander("🔧 Raw API response"):
-            st.json(raw_json)
-
-# Step 2: CSV grading
-st.header("📁 Step 2: Upload CSV of Posts")
-st.markdown("✅ Must include a `DiscussionPost` column.")
-with st.expander("See example"):
-    st.write(pd.DataFrame({"DiscussionPost": ["Example post that meets your prompt."]}))
-
-uploaded = st.file_uploader("Upload CSV", type="csv")
-if uploaded:
-    if not st.session_state.internal_prompt:
-        st.error("Optimize prompt first.")
-    else:
-        df = pd.read_csv(uploaded)
-        if "DiscussionPost" not in df.columns:
-            st.error("Missing `DiscussionPost` column.")
-        else:
-            df["DiscussionPost"] = df["DiscussionPost"].fillna("").astype(str).str.strip()
-            st.success("Grading…")
-            outp = st.empty()
-            prog = st.progress(0)
-            for i, post in enumerate(df["DiscussionPost"], 1):
-                g, r = grade_post(post)
-                st.session_state.graded_data.append({"Post": post, "Grade": g, "Reason": r})
-                outp.dataframe(pd.DataFrame(st.session_state.graded_data), use_container_width=True)
-                prog.progress(i / len(df))
-            st.success("✅ Done!")
-
-# Final table + download
-st.header("📋 Graded Results")
-if st.session_state.graded_data:
-    final_df = pd.DataFrame(st.session_state.graded_data)
-    st.dataframe(final_df, use_container_width=True)
-    csv = final_df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download CSV", csv, "graded_posts.csv", "text/csv")
-    if st.button("🗑️ Reset All"):
-        st.session_state.clear()
-        st.experimental_rerun()
+    if st.button("✔️ Confirm Prompt"):
+        st.session_state.prompt_text = prompt_input.strip().replace("…", "...")
 else:
-    st.info("No posts graded yet.")
+    st.markdown(f"**Grading Prompt:** {st.session_state.prompt_text}")
+
+if not st.session_state.prompt_text:
+    st.info("Please enter and confirm your grading prompt above.")
+    st.stop()
+
+PROMPT = st.session_state.prompt_text
+
+# ——— 5) Count‐rule parsing ———
+COUNT_PATTERNS = [
+    r"(?:at\s+least)\s+(\d+)\s+([A-Za-z ]+?)(?:[.,]|$)",
+    r"(?:must|should)\s+contain\s+(\d+)\s+([A-Za-z ]+?)(?:[.,]|$)",
+    r"(?:contains)\s+(\d+)\s+([A-Za-z ]+?)(?:[.,]|$)",
+]
+
+@st.cache_data
+def parse_count_rules(prompt: str):
+    rules = []
+    for pat in COUNT_PATTERNS:
+        for num, feat in re.findall(pat, prompt, re.IGNORECASE):
+            key = feat.strip().lower().rstrip("s")
+            rules.append((key, int(num)))
+    return rules
+
+rules = parse_count_rules(PROMPT)
+
+if rules:
+    unknown = [feat for feat, _ in rules if feat not in {"capital letter","vowel","noun","verb"}]
+    if unknown:
+        st.warning(f"⚠️ Cannot count feature(s): {', '.join(unknown)}; those will be checked semantically.")
+
+# ——— 6) Feature counting ———
+def count_capitals(text): return len(re.findall(r"[A-Z]", text))
+def count_vowels(text):   return len(re.findall(r"[aeiouAEIOU]", text))
+def count_nouns(text):
+    tags = pos_tag(word_tokenize(text))
+    return sum(1 for _, t in tags if t.startswith("NN"))
+def count_verbs(text):
+    tags = pos_tag(word_tokenize(text))
+    return sum(1 for _, t in tags if t.startswith("VB"))
+
+FEATURE_FNS = {
+    "capital letter": count_capitals,
+    "vowel":          count_vowels,
+    "noun":           count_nouns,
+    "verb":           count_verbs,
+}
+
+# ——— 7) Safe LLM call ———
+def safe_chat(messages, **kwargs):
+    try:
+        return client.chat.completions.create(
+            model=MODEL_NAME, messages=messages, **kwargs
+        )
+    except OpenAIError as e:
+        st.error(f"LLM error: {e}")
+        return None
+
+# ——— 8) Semantic fallback ———
+def semantic_grade(text: str):
+    snippet = text if len(text) <= MAX_POST_LENGTH else text[:MAX_POST_LENGTH] + "…"
+    user_content = (
+        f"Grading criteria (semantic): {PROMPT}\n\n"
+        f"Student post:\n{snippet}\n\n"
+        "Respond only with valid JSON:\n"
+        "{\"meets\": true|false, \"reason\": \"one-sentence explanation\"}"
+    )
+    resp = safe_chat(
+        [
+            {"role":"system","content":"You are an expert grader."},
+            {"role":"user",  "content":user_content}
+        ],
+        temperature=SEM_TEMPERATURE,
+        max_tokens=150
+    )
+    if not resp:
+        return 0, "LLM failure"
+    out = resp.choices[0].message.content.strip()
+    m = re.search(r"(\{.*\})", out, re.DOTALL)
+    if not m:
+        return 0, "LLM returned invalid JSON"
+    try:
+        obj = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return 0, "LLM returned invalid JSON"
+    meets = bool(obj.get("meets"))
+    return (100 if meets else 0), obj.get("reason","").strip()
+
+# ——— 9) Unified grading ———
+def grade_post(text: str):
+    text = text.replace("…", "...")
+    if rules:
+        failures = []
+        for feat, need in rules:
+            fn = FEATURE_FNS.get(feat)
+            if fn:
+                have = fn(text)
+                if have < need:
+                    failures.append(f"{have} {feat}(s) (needs {need})")
+        meets = not failures
+        reason = "Meets all criteria." if meets else "Missing: " + "; ".join(failures)
+        return (100 if meets else 0), reason
+    return semantic_grade(text)
+
+# ——— 10) CSV upload & grading ———
+uploaded = st.file_uploader(
+    "Upload CSV with a `DiscussionPost` column", type="csv", disabled=not PROMPT
+)
+if uploaded:
+    df = pd.read_csv(uploaded)
+    if "DiscussionPost" not in df.columns:
+        st.error("CSV must contain a column named `DiscussionPost`.")
+    else:
+        st.subheader("Grading in progress…")
+        placeholder = st.empty()
+        progress    = st.progress(0)
+        results     = []
+        passed = failed = 0
+
+        for i, post in enumerate(df["DiscussionPost"].astype(str), start=1):
+            grade, reason = grade_post(post)
+            results.append({
+                "DiscussionPost": post,
+                "Grade": grade,
+                "Reason": reason
+            })
+            if grade == 100: passed += 1
+            else:            failed += 1
+            placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
+            progress.progress(i / len(df))
+
+        st.download_button(
+            "⬇️ Download Graded CSV",
+            data=pd.DataFrame(results).to_csv(index=False).encode("utf-8"),
+            file_name="graded_results.csv",
+            mime="text/csv"
+        )
+        st.markdown(f"**Summary:** {passed} passed • {failed} failed out of {len(results)}")
+
+        # ——— 11) Summarize ———
+        st.subheader("💡 Summary of Discussion Posts")
+        all_posts = "\n\n".join(df["DiscussionPost"].astype(str).tolist())
+
+        @st.cache_data(show_spinner=False)
+        def summarize(posts: str) -> str:
+            resp = safe_chat(
+                [
+                    {"role":"system","content":"You are an expert summarizer."},
+                    {"role":"user",  "content":
+                        "Please provide a concise paragraph summary of these discussion posts:\n\n"
+                        + posts}
+                ],
+                temperature=SUM_TEMPERATURE,
+                max_tokens=200
+            )
+            return resp.choices[0].message.content.strip() if resp else "Could not generate summary."
+
+        st.write(summarize(all_posts))
+
+        if st.button("🔄 Reset App"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.experimental_rerun()
