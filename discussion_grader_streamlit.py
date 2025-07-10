@@ -208,3 +208,15 @@ if uploaded:
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.experimental_rerun()
+
+        if st.button("🔄 Reset App"):
+            # Clear all session keys
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+    
+            # Clear cache
+            st.cache_data.clear()
+    
+            # Rerun script
+            st.experimental_rerun()
+
